@@ -143,11 +143,16 @@ $('badgeText').textContent = isGPU ? 'WebGPU' : 'WebGL 2';
 /* ---------- scanned assets from Poly Haven (CC0): sky, ground, bark and leaves ---------- */
 let SKY, GRASS_A, GRASS_B, FLOOR, ROCK, PEBBLES, GRASS_N, PEBBLES_N, BARK, BARK_N, CONIFER_ATLAS, BROAD_ATLAS;
 try {
-  // Fetch each file and decode it from a local blob: the one loading path that works both on a normal server and inside a published page.
+  // Images come inline (published page) or are fetched from assets/ (repo copy served by a web server).
   const loadImage = async (name) => {
-    const res = await fetch('assets/' + name);
-    if (!res.ok) throw new Error(name + ' (' + res.status + ')');
-    const img = new Image(); img.src = URL.createObjectURL(await res.blob());
+    const img = new Image();
+    const inline = window.ASSETS && window.ASSETS[name];           // the published page carries its assets inline
+    if (inline) img.src = inline;
+    else {
+      const res = await fetch('assets/' + name);
+      if (!res.ok) throw new Error(name + ' (' + res.status + ')');
+      img.src = URL.createObjectURL(await res.blob());
+    }
     await new Promise((ok, no) => { img.onload = ok; img.onerror = () => no(new Error(name + ' を画像として開けません')); });
     return img;
   };
