@@ -15,3 +15,14 @@ npx serve .
 ```
 
 同じ Wi-Fi の iPhone から表示された URL を開きます (WebGPU は HTTPS か localhost が必要なため、LAN 経由の HTTP では WebGL 2 で動きます)。
+
+### 素材
+
+`assets/` の空・地面・樹皮・葉の素材は [Poly Haven](https://polyhaven.com) のCC0アセットを加工したものです。
+
+- 空と環境光: Kloofendal 38d Partly Cloudy (Pure Sky)
+- 地面: Forrest Ground 01, Rocky Terrain 02, Leafy Grass, Mossy Rock, Ganges River Pebbles
+- 樹皮: Bark Brown 02
+- 葉: Fir Tree 01 の小枝、Island Tree 02 の葉
+
+素材を読み込むため、`index.html` はファイルを直接開くのではなく、上の手順のようにサーバー経由で開いてください。
