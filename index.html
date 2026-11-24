@@ -143,17 +143,24 @@ $('badgeText').textContent = isGPU ? 'WebGPU' : 'WebGL 2';
 /* ---------- scanned assets from Poly Haven (CC0): sky, ground, bark and leaves ---------- */
 let SKY, GRASS_A, GRASS_B, FLOOR, ROCK, PEBBLES, GRASS_N, PEBBLES_N, BARK, BARK_N, CONIFER_ATLAS, BROAD_ATLAS;
 try {
-  const tl = new THREE.TextureLoader();
+  // Fetch each file and decode it from a local blob: the one loading path that works both on a normal server and inside a published page.
+  const loadImage = async (name) => {
+    const res = await fetch('assets/' + name);
+    if (!res.ok) throw new Error(name + ' (' + res.status + ')');
+    const img = new Image(); img.src = URL.createObjectURL(await res.blob());
+    await new Promise((ok, no) => { img.onload = ok; img.onerror = () => no(new Error(name + ' を画像として開けません')); });
+    return img;
+  };
   const maxAniso = Math.min(8, renderer.getMaxAnisotropy ? renderer.getMaxAnisotropy() : 4);
-  const tex = (name, srgb = true, tile = true) => tl.loadAsync('assets/' + name).then((t) => {
+  const tex = (name, srgb = true, tile = true) => loadImage(name).then((img) => {
+    const t = new THREE.Texture(img); t.needsUpdate = true;
     t.colorSpace = srgb ? THREE.SRGBColorSpace : THREE.NoColorSpace;
     if (tile) t.wrapS = t.wrapT = THREE.RepeatWrapping;
     t.anisotropy = maxAniso; return t;
   });
   // The HDR sky is stored as two plain images (colour mantissa + exponent) and rebuilt into half-float pixels here.
   const loadSky = async () => {
-    const il = new THREE.ImageLoader();
-    const [rgb, ex] = await Promise.all([il.loadAsync('assets/sky_rgb.png'), il.loadAsync('assets/sky_e.png')]);
+    const [rgb, ex] = await Promise.all([loadImage('sky_rgb.png'), loadImage('sky_e.png')]);
     const w = rgb.naturalWidth, h = rgb.naturalHeight;
     const read = (img) => { const c = document.createElement('canvas'); c.width = w; c.height = h; const x = c.getContext('2d', { willReadFrequently: true }); x.drawImage(img, 0, 0); return x.getImageData(0, 0, w, h).data; };
     const M = read(rgb), E = read(ex), out = new Uint16Array(w * h * 4), half = THREE.DataUtils.toHalfFloat, one = half(1);
@@ -177,7 +184,7 @@ try {
   SKY.mapping = THREE.EquirectangularReflectionMapping;
   $('veilText').textContent = '森を育てています…';
 } catch (e) {
-  fail('素材を読み込めませんでした。通信環境を確認して開き直してください。');
+  fail('素材を読み込めませんでした。通信環境を確認して開き直してください。［' + String(e && e.message || e).slice(0, 80) + '］');
   throw e;
 }
 
