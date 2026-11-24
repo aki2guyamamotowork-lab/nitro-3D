@@ -110,6 +110,7 @@
 
 <div id="veil"><p id="veilText">森を呼び起こしています…</p></div>
 
+<script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.webgpu.min.js","three/webgpu":"https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.webgpu.min.js","three/tsl":"https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.tsl.min.js"}}</script>
 <script type="module">
 const $ = (id) => document.getElementById(id);
 const fail = (msg) => { $('veilText').textContent = msg; $('badgeText').textContent = '停止'; };
@@ -122,7 +123,7 @@ try {
   throw e;
 }
 const { color, float, vec3, time, sin, cos, mix, smoothstep, positionLocal, positionWorld, normalWorld, cameraPosition, uv, attribute,
-        mx_noise_float, pow, normalize, dot, max, abs, clamp, reflect } = THREE.TSL;
+        mx_noise_float, pow, normalize, dot, max, abs, clamp, reflect, fog, densityFogFactor, pass } = THREE.TSL;
 
 /* ---------- renderer (WebGPU, falls back to WebGL 2 by itself) ---------- */
 const canvas = $('scene');
@@ -139,8 +140,9 @@ const isGPU = renderer.backend && renderer.backend.isWebGPUBackend === true;
 $('badge').classList.add(isGPU ? 'gpu' : 'gl');
 $('badgeText').textContent = isGPU ? 'WebGPU' : 'WebGL 2';
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
-renderer.toneMappingExposure = 0.95;
+renderer.toneMappingExposure = 0.92;
 renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
 const scene = new THREE.Scene();
 const HAZE = 0xc3d9ec;
@@ -228,14 +230,23 @@ const forestAt = (x, z) => fbm(x * 0.018 + 5, z * 0.018 + 9);
 const shoreDist = (x, z) => Math.abs(x - riverX(z)) - riverW(z);
 
 /* ---------- sky: gradient, sun disc and drifting clouds, all in one shader ---------- */
-const sunDir = new THREE.Vector3(0.5, 0.52, 0.69).normalize();
+const sunDir = new THREE.Vector3(-0.84, 0.5, -0.12).normalize();          // late-afternoon side light
+const SUN = vec3(sunDir.x, sunDir.y, sunDir.z);
+const WARM = 0xffe0b0;
+const viewRay = normalize(positionWorld.sub(cameraPosition));
+const towardSun = pow(max(dot(viewRay, SUN), 0), 6);                       // 1 when looking into the sun
+// haze that glows warm on the sun's side
+if (fog && densityFogFactor) scene.fogNode = fog(mix(color(HAZE), color(WARM), towardSun.mul(0.8)), densityFogFactor(float(0.0031)));
+// soft shadows of clouds drifting over the land
+const cloudShade = (wp) => mix(float(0.58), float(1), smoothstep(0.36, 0.6, n01(vec3(wp.x.mul(0.011).add(time.mul(0.02)), wp.z.mul(0.011).add(time.mul(0.006)), 3))));
 const SKY_ZENITH = 0x1d5cb4, SKY_MID = 0x5d9fe0;
 {
   const dir = normalize(positionLocal), h = dir.y;
   const sunV = vec3(sunDir.x, sunDir.y, sunDir.z), d = max(dot(dir, sunV), 0);
-  let c = mix(color(HAZE), color(SKY_MID), smoothstep(0.0, 0.3, h));
+  const hz = mix(color(HAZE), color(WARM), pow(d, 6).mul(0.8));
+  let c = mix(hz, color(SKY_MID), smoothstep(0.0, 0.3, h));
   c = mix(c, color(SKY_ZENITH), smoothstep(0.25, 0.95, h));
-  c = c.add(color(0xffe2b0).mul(pow(d, 10).mul(0.28)));
+  c = c.add(color(0xffd9a0).mul(pow(d, 10).mul(0.4)));
   const cloudFbm = (px, py) => {
     let s = null, a = 0.5, f = 1;
     for (let i = 0; i < 4; i++) { const n = mx_noise_float(vec3(px.mul(f).add(time.mul(0.012 * (i + 1))), py.mul(f), float(f * 1.7))).mul(a); s = s ? s.add(n) : n; a *= 0.5; f *= 2.13; }
@@ -246,9 +257,9 @@ const SKY_ZENITH = 0x1d5cb4, SKY_MID = 0x5d9fe0;
   const toward = cloudFbm(cp.x.add(0.14), cp.y.add(0.2));            // density a step toward the sun, for self-shadowing
   const cover = smoothstep(0.5, 0.74, dens).mul(smoothstep(0.03, 0.26, h));
   const lit = clamp(float(1.05).sub(toward.sub(0.45).mul(1.5)), 0.5, 1.12);
-  c = mix(c, mix(color(0x7f93b0), color(0xffffff), lit), cover.mul(0.92));
+  c = mix(c, mix(color(0x7f93b0), mix(color(0xffffff), color(0xffe9c8), pow(d, 3)), lit), cover.mul(0.92));
   c = c.add(color(0xfff1d0).mul(smoothstep(0.9993, 0.9997, d).mul(9).add(pow(d, 300).mul(1.6))));
-  c = mix(color(HAZE), c, smoothstep(-0.08, 0.04, h));
+  c = mix(hz, c, smoothstep(-0.08, 0.04, h));
   const m = new THREE.MeshBasicNodeMaterial({ side: THREE.BackSide, fog: false, depthWrite: false });
   m.colorNode = c;
   const sky = new THREE.Mesh(new THREE.SphereGeometry(1100, 48, 24), m);
@@ -261,13 +272,14 @@ const SKY_ZENITH = 0x1d5cb4, SKY_MID = 0x5d9fe0;
 }
 
 /* ---------- light and shadow ---------- */
-scene.add(new THREE.HemisphereLight(0xbdd8ff, 0x6a6844, 1.7));
-const sunLight = new THREE.DirectionalLight(0xfff0d8, 4.2);
-sunLight.position.copy(sunDir).multiplyScalar(260);
+scene.add(new THREE.HemisphereLight(0xa8c6ff, 0x625c40, 1.45));
+const sunLight = new THREE.DirectionalLight(0xffdcb0, 5.4);
+sunLight.position.copy(sunDir).multiplyScalar(480);
 sunLight.castShadow = true;
-sunLight.shadow.mapSize.set(2048, 2048);
-Object.assign(sunLight.shadow.camera, { left: -175, right: 175, top: 175, bottom: -175, near: 20, far: 620 });
-sunLight.shadow.bias = -0.002; sunLight.shadow.normalBias = 1.3;
+sunLight.shadow.mapSize.set(4096, 4096);
+sunLight.shadow.radius = 2.5;
+Object.assign(sunLight.shadow.camera, { left: -185, right: 185, top: 185, bottom: -185, near: 20, far: 960 });
+sunLight.shadow.bias = -0.0012; sunLight.shadow.normalBias = 0.7;
 sunLight.shadow.autoUpdate = false; sunLight.shadow.needsUpdate = true;      // the world is static: bake the shadow map once
 scene.add(sunLight);
 const lit = (m, cast = true, receive = true) => { m.castShadow = cast; m.receiveShadow = receive; return m; };
@@ -302,7 +314,7 @@ const lit = (m, cast = true, receive = true) => { m.castShadow = cast; m.receive
   c = mix(c, rockC, rockF);
   c = mix(c, color(0xf1f4fa), smoothstep(56, 66, wp.y.add(mid.mul(8))).mul(smoothstep(0.3, 0.55, ny)));
   const m = new THREE.MeshStandardNodeMaterial({ roughness: 0.96, metalness: 0 });
-  m.colorNode = c;
+  m.colorNode = c.mul(cloudShade(wp));
   scene.add(lit(new THREE.Mesh(g, m), true, true));
 }
 
@@ -337,11 +349,11 @@ const lit = (m, cast = true, receive = true) => { m.castShadow = cast; m.receive
   const V = normalize(cameraPosition.sub(wp));
   const fres = pow(float(1).sub(max(dot(nrm, V), 0)), 4).mul(0.94).add(0.05);
   const R = reflect(V.negate(), nrm);
-  const skyRefl = mix(color(HAZE), color(SKY_MID), smoothstep(0.0, 0.5, R.y)).mul(1.05);
+  const skyRefl = mix(mix(color(HAZE), color(WARM), pow(max(dot(R, SUN), 0), 5).mul(0.8)), color(SKY_MID), smoothstep(0.0, 0.5, R.y)).mul(1.05);
   const edge = abs(uv().x.sub(0.5)).mul(2), deepF = float(1).sub(smoothstep(0.5, 0.97, edge));
   const body = mix(color(0x3b7a70), color(0x0a3138), deepF);
-  const sunV = vec3(sunDir.x, sunDir.y, sunDir.z);
-  const glint = pow(max(dot(R, sunV), 0), 600).mul(2);
+  const sunV = SUN;
+  const glint = pow(max(dot(R, sunV), 0), 500).mul(3.5);
   let c = mix(body, skyRefl, fres).add(color(0xfff2d6).mul(glint));
   const streak = n01(vec3(wp.x.mul(1.1), wp.z.mul(0.35).sub(t.mul(1.5)), wp.y.mul(1.6)));
   const fa = attribute('foam', 'float');
@@ -371,8 +383,9 @@ function foliageMaterial(amt) {
   const m = new THREE.MeshStandardNodeMaterial({ roughness: 0.88, metalness: 0, side: THREE.DoubleSide });
   const wp = positionWorld;
   const clump = smoothstep(-0.4, 0.5, mx_noise_float(wp.mul(2.7)));          // dark gaps between leaf masses
-  const leafy = n01(wp.mul(11)).mul(0.4).add(0.8);
-  m.colorNode = attribute('tint', 'vec3').mul(mix(float(0.66), float(1.08), clump)).mul(leafy);
+  const leafy = n01(wp.mul(9)).mul(0.22).add(0.89);
+  m.colorNode = attribute('tint', 'vec3').mul(mix(float(0.74), float(1.06), clump)).mul(leafy).mul(cloudShade(wp));
+  m.emissiveNode = attribute('tint', 'vec3').mul(color(0xb4cc3c)).mul(pow(max(dot(viewRay, SUN), 0), 3).mul(0.3)).mul(clump);   // leaves glow when backlit
   m.positionNode = swayNode(amt);
   return m;
 }
@@ -463,7 +476,7 @@ const rockMat = new THREE.MeshStandardNodeMaterial({ roughness: 0.93, metalness:
   const wp = positionWorld;
   const a = n01(wp.mul(0.9)), b = n01(wp.mul(5));
   const moss = smoothstep(0.55, 0.9, normalWorld.y).mul(smoothstep(0.45, 0.7, a));
-  rockMat.colorNode = mix(mix(color(0x55524e), color(0x8e887e), a).mul(b.mul(0.45).add(0.75)), color(0x4b5f2c), moss.mul(0.7));
+  rockMat.colorNode = mix(mix(color(0x55524e), color(0x8e887e), a).mul(b.mul(0.45).add(0.75)), color(0x4b5f2c), moss.mul(0.7)).mul(cloudShade(wp));
   const N = 320, rocks = new THREE.InstancedMesh(lump(1, 1, 0.5, 31), rockMat, N);
   for (let i = 0; i < N; i++) {
     const nearFall = i < 40, z = nearFall ? rr(fallTop - 3, fallBot + 6) : rr(-135, 92), w = riverW(z);
@@ -547,6 +560,31 @@ crystalCluster(riverX(fallBot + 2) - 9, fallBot + 3, 0x9ff5d0, 1.1);
 crystalCluster(riverX(70) - riverW(70) - 6, 70, 0x7fe7ff, 1.2);
 crystalCluster(treeX + 9, treeZ + 7, 0xffe08a, 0.9);
 
+/* shafts of sunlight through the canopy and the waterfall mist */
+const shaftMats = [];
+{
+  const cv = document.createElement('canvas'); cv.width = 64; cv.height = 256;
+  const x = cv.getContext('2d');
+  let gr = x.createLinearGradient(0, 0, 64, 0); gr.addColorStop(0, 'rgba(255,255,255,0)'); gr.addColorStop(0.5, 'rgba(255,255,255,1)'); gr.addColorStop(1, 'rgba(255,255,255,0)');
+  x.fillStyle = gr; x.fillRect(0, 0, 64, 256);
+  x.globalCompositeOperation = 'destination-in';
+  gr = x.createLinearGradient(0, 0, 0, 256); gr.addColorStop(0, 'rgba(0,0,0,0)'); gr.addColorStop(0.25, 'rgba(0,0,0,0.9)'); gr.addColorStop(0.8, 'rgba(0,0,0,0.5)'); gr.addColorStop(1, 'rgba(0,0,0,0)');
+  x.fillStyle = gr; x.fillRect(0, 0, 64, 256);
+  const tex = new THREE.CanvasTexture(cv); tex.colorSpace = THREE.SRGBColorSpace;
+  for (let i = 0; i < 3; i++) shaftMats.push(new THREE.MeshBasicMaterial({ map: tex, color: 0xffe2a8, transparent: true, opacity: 0.1, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide, fog: false }));
+  const plane = new THREE.PlaneGeometry(1, 1), up = new THREE.Vector3(0, 1, 0);
+  const lee = new THREE.Vector3(-sunDir.x, 0, -sunDir.z).normalize(), across = new THREE.Vector3(-lee.z, 0, lee.x);
+  const shaft = (gx, gz, len, wid) => {
+    const g = new THREE.Group(), gy = Math.max(ground(gx, gz), waterAt(gx, gz));
+    g.position.set(gx, gy, gz).addScaledVector(sunDir, len / 2); g.quaternion.setFromUnitVectors(up, sunDir);
+    for (let k = 0; k < 2; k++) { const m = new THREE.Mesh(plane, pick(shaftMats)); m.scale.set(wid, len, 1); m.rotation.y = k * Math.PI / 2 + rnd(); g.add(m); }
+    scene.add(g);
+  };
+  for (let i = 0; i < 9; i++) { const a = rr(3, 20), b = rr(-11, 11); shaft(treeX + lee.x * a + across.x * b, treeZ + lee.z * a + across.z * b, rr(42, 58), rr(3.5, 7)); }
+  for (let i = 0; i < 5; i++) shaft(riverX(fallBot) + rr(-7, 7), fallBot + rr(0, 7), rr(30, 42), rr(4, 7));
+  for (let i = 0; i < 10; i++) { const z = rr(-50, 60), sd = rnd() < 0.5 ? -1 : 1; shaft(riverX(z) + sd * (riverW(z) + rr(5, 16)), z, rr(26, 38), rr(3, 5.5)); }
+}
+
 /* birds */
 const BIRD_N = 18, birdData = [];
 const birdGeo = new THREE.BufferGeometry();
@@ -624,6 +662,15 @@ function resize() {
 }
 new ResizeObserver(resize).observe(stage); resize();
 
+/* ---------- bloom: bright light bleeds softly (skipped if the add-on cannot load) ---------- */
+let post = null;
+try {
+  const { bloom } = await import('https://cdn.jsdelivr.net/npm/three@0.180.0/examples/jsm/tsl/display/BloomNode.js');
+  const scenePass = pass(scene, camera), col = scenePass.getTextureNode('output');
+  post = new THREE.PostProcessing(renderer);
+  post.outputNode = col.add(bloom(col, 0.32, 0.55, 1.0));
+} catch (e) { post = null; }
+
 /* ---------- frame loop ---------- */
 const clock = new THREE.Clock();
 let first = true, acc = 0, frames = 0;
@@ -661,7 +708,9 @@ renderer.setAnimationLoop(() => {
   }
   flies.instanceMatrix.needsUpdate = true;
 
-  renderer.render(scene, camera);
+  for (let i = 0; i < shaftMats.length; i++) shaftMats[i].opacity = 0.085 + 0.035 * Math.sin(t * 0.35 + i * 2.1);
+  if (post) { try { post.render(); } catch (e) { post = null; renderer.render(scene, camera); } }
+  else renderer.render(scene, camera);
   if (first) { first = false; $('veil').classList.add('gone'); setTimeout(() => $('hint').classList.add('gone'), 9000); }
 });
 </script>
